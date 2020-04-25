@@ -53,6 +53,10 @@ python generate.py pre-processed-data-dir --path model-save-dir/averaged.pt  --b
 
 ## Summarization
 
+In our paper, we used old pytorch and fairseq.
+
+Please use [this code](https://github.com/takase/alone_old_seq2seq) to reproduce summarization results in our paper.
+
 ### Training
 
 For binary mask with D_{inter} = 1024 using 4GPUs
