@@ -573,6 +573,8 @@ def add_generation_args(parser):
     # special decoding format for advanced decoding.
     group.add_argument('--decoding-format', default=None, type=str, choices=['unigram', 'ensemble', 'vote', 'dp', 'bs'])
     # fmt: on
+    group.add_argument('--desired-length', default=-1, type=int, metavar='N',
+                       help='desired length of output -1 without desired length and 0 means using the correct output length and')
     return group
 
 

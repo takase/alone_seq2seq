@@ -27,6 +27,7 @@ class SequenceGenerator(nn.Module):
         normalize_scores=True,
         len_penalty=1.0,
         unk_penalty=0.0,
+        desired_length=-1,
         retain_dropout=False,
         temperature=1.0,
         match_source_len=False,
@@ -77,6 +78,7 @@ class SequenceGenerator(nn.Module):
         self.normalize_scores = normalize_scores
         self.len_penalty = len_penalty
         self.unk_penalty = unk_penalty
+        self.desired_length = desired_length
         self.retain_dropout = retain_dropout
         self.temperature = temperature
         self.match_source_len = match_source_len
@@ -128,6 +130,8 @@ class SequenceGenerator(nn.Module):
             encoder_input = {
                 k: v for k, v in input.items() if k != "prev_output_tokens"
             }
+            if self.desired_length > -1:
+                encoder_input['tgt_lengths'].fill_(self.desired_length + 1) #+1 for EOS
             if timer is not None:
                 timer.start()
             with torch.no_grad():
@@ -202,6 +206,7 @@ class SequenceGenerator(nn.Module):
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
         new_order = new_order.to(src_tokens.device).long()
         encoder_outs = self.model.reorder_encoder_out(encoder_outs, new_order)
+        tgt_lengths = encoder_input['tgt_lengths'].index_select(0, new_order)
         # ensure encoder_outs is a List.
         assert encoder_outs is not None
 
@@ -262,9 +267,10 @@ class SequenceGenerator(nn.Module):
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
                 )
+                tgt_lengths = tgt_lengths.index_select(0, reorder_state)
 
             lprobs, avg_attn_scores = self.model.forward_decoder(
-                tokens[:, : step + 1], encoder_outs, self.temperature
+                tokens[:, : step + 1], encoder_outs, tgt_lengths, self.temperature, 
             )
             lprobs[lprobs != lprobs] = torch.tensor(-math.inf).to(lprobs)
 
@@ -700,7 +706,7 @@ class EnsembleModel(nn.Module):
 
     @torch.jit.export
     def forward_decoder(
-        self, tokens, encoder_outs: List[EncoderOut], temperature: float = 1.0
+        self, tokens, encoder_outs: List[EncoderOut], tgt_lengths = None, temperature: float = 1.0
     ):
         log_probs = []
         avg_attn: Optional[Tensor] = None
@@ -714,9 +720,10 @@ class EnsembleModel(nn.Module):
                     tokens,
                     encoder_out=encoder_out,
                     incremental_state=self.incremental_states[i],
+                    tgt_lengths=tgt_lengths,
                 )
             else:
-                decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out)
+                decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out, tgt_lengths=tgt_lengths)
 
             attn: Optional[Tensor] = None
             decoder_len = len(decoder_out)

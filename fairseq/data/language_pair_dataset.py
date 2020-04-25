@@ -59,6 +59,7 @@ def collate(
 
     prev_output_tokens = None
     target = None
+    tgt_lengths = None
     if samples[0].get('target', None) is not None:
         target = merge('target', left_pad=left_pad_target)
         target = target.index_select(0, sort_order)
@@ -84,6 +85,7 @@ def collate(
         'net_input': {
             'src_tokens': src_tokens,
             'src_lengths': src_lengths,
+            'tgt_lengths': tgt_lengths,
         },
         'target': target,
     }

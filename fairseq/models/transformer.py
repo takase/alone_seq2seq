@@ -181,6 +181,12 @@ class TransformerModel(FairseqEncoderDecoderModel):
                             help='add layernorm to embedding')
         parser.add_argument('--no-scale-embedding', action='store_true',
                             help='if True, dont scale embeddings')
+        parser.add_argument('--represent-length-by-lrpe', default=False, action='store_true',
+                            help='represent target length by length ratio positional encoding')
+        parser.add_argument('--represent-length-by-ldpe', default=False, action='store_true',
+                            help='represent target length by length difference positional encoding')
+        parser.add_argument('--ordinary-sinpos', default=False, action='store_true',
+                            help='use ordinary sinusoidal positional encoding (absolute position) with length control encoding')
         # fmt: on
 
     @classmethod
@@ -267,6 +273,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
         src_tokens,
         src_lengths,
         prev_output_tokens,
+        tgt_lengths = None,
         cls_input: Optional[Tensor] = None,
         return_all_hiddens: bool = True,
         features_only: bool = False,
@@ -292,6 +299,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
             src_lengths=src_lengths,
+            tgt_lengths=tgt_lengths,
             return_all_hiddens=return_all_hiddens,
         )
         return decoder_out
@@ -636,6 +644,9 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         embed_dim = args.decoder_embed_dim
         self.embed_dim = embed_dim
         self.output_embed_dim = args.decoder_output_dim
+        self.ordinary_sinpos = args.ordinary_sinpos
+        self.represent_length_by_lrpe = args.represent_length_by_lrpe
+        self.represent_length_by_ldpe = args.represent_length_by_ldpe
 
         self.padding_idx = embed_tokens.padding_idx
         self.max_target_positions = args.max_target_positions
@@ -650,16 +661,25 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             else None
         )
 
-        self.embed_positions = (
-            PositionalEmbedding(
+        self.embed_positions_original = PositionalEmbedding(
+                args.max_target_positions,
+                embed_dim, 
+                self.padding_idx,
+                learned=args.decoder_learned_pos,
+            ) if not args.no_token_positional_embeddings else None
+
+        self.embed_positions_lrpe = PositionalEmbedding(
                 args.max_target_positions,
                 embed_dim,
                 self.padding_idx,
-                learned=args.decoder_learned_pos,
-            )
-            if not args.no_token_positional_embeddings
-            else None
-        )
+            ) if not args.no_token_positional_embeddings and self.represent_length_by_lrpe else None
+
+        self.embed_positions_ldpe = PositionalEmbedding(
+                args.max_target_positions, 
+                embed_dim, 
+                self.padding_idx,
+            ) if not args.no_token_positional_embeddings and self.represent_length_by_ldpe else None
+
 
         self.cross_self_attention = getattr(args, "cross_self_attention", False)
         self.layer_wise_attention = getattr(args, "layer_wise_attention", False)
@@ -720,6 +740,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
         src_lengths: Optional[Any] = None,
+        tgt_lengths = None,
         return_all_hiddens: bool = False,
     ):
         """
@@ -741,6 +762,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         x, extra = self.extract_features(
             prev_output_tokens,
             encoder_out=encoder_out,
+            tgt_lengths=tgt_lengths,
             incremental_state=incremental_state,
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
@@ -753,6 +775,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         self,
         prev_output_tokens,
         encoder_out: Optional[EncoderOut] = None,
+        tgt_lengths = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         full_context_alignment: bool = False,
         alignment_layer: Optional[int] = None,
@@ -781,18 +804,45 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             alignment_layer = self.num_layers - 1
 
         # embed positions
-        positions = (
-            self.embed_positions(
-                prev_output_tokens, incremental_state=incremental_state
-            )
-            if self.embed_positions is not None
-            else None
-        )
+        positions = None
+        if self.ordinary_sinpos or (not self.represent_length_by_lrpe and not self.represent_length_by_ldpe):
+            positions_orig = self.embed_positions_original(
+                prev_output_tokens,
+                incremental_state=incremental_state,
+            ) if self.embed_positions_original is not None else None
+            if incremental_state is not None:
+                positions = positions_orig[:, -1:]
+            else:
+                positions = positions_orig
+
+        if self.represent_length_by_lrpe:
+            positions_lrpe = self.embed_positions_lrpe(
+                prev_output_tokens,
+                incremental_state=incremental_state,
+                length=tgt_lengths,
+                sinpostype='ratio',
+            ) if self.embed_positions_lrpe is not None else None
+            if incremental_state is not None:
+                positions_tmp = positions_lrpe.view(positions_lrpe.size(0), 1, -1)
+            else:
+                positions_tmp = positions_lrpe
+            positions = positions + positions_tmp if positions is not None else positions_tmp
+
+        if self.represent_length_by_ldpe:
+            positions_ldpe = self.embed_positions_ldpe(
+                prev_output_tokens,
+                incremental_state=incremental_state,
+                length=tgt_lengths,
+                sinpostype='absolute',
+            ) if self.embed_positions_ldpe is not None else None
+            if incremental_state is not None:
+                positions_tmp = positions_ldpe[:, -1:]
+            else:
+                positions_tmp = positions_ldpe
+            positions = positions + positions_tmp if positions is not None else positions_tmp
 
         if incremental_state is not None:
             prev_output_tokens = prev_output_tokens[:, -1:]
-            if positions is not None:
-                positions = positions[:, -1:]
 
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(prev_output_tokens)
@@ -888,9 +938,9 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
     def max_positions(self):
         """Maximum output length supported by the decoder."""
-        if self.embed_positions is None:
+        if self.embed_positions_original is None:
             return self.max_target_positions
-        return min(self.max_target_positions, self.embed_positions.max_positions)
+        return min(self.max_target_positions, self.embed_positions_original.max_positions)
 
     def buffered_future_mask(self, tensor):
         dim = tensor.size(0)
@@ -909,7 +959,9 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
     def upgrade_state_dict_named(self, state_dict, name):
         """Upgrade a (possibly old) state dict for new versions of fairseq."""
-        if isinstance(self.embed_positions, SinusoidalPositionalEmbedding):
+        if isinstance(self.embed_positions_original, SinusoidalPositionalEmbedding):
+            pass
+        elif isinstance(self.embed_positions, SinusoidalPositionalEmbedding):
             weights_key = "{}.embed_positions.weights".format(name)
             if weights_key in state_dict:
                 del state_dict[weights_key]
