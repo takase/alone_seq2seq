@@ -1,5 +1,10 @@
 # All Word Embeddings from One Embedding
 
+This repository contains source files we used in our paper
+>[All Word Embeddings from One Embedding](https://arxiv.org/abs/2004.12073)
+
+>Sho Takase, Sosuke Kobayashi
+
 ## Requirements
 
 - PyTorch version >= 1.4.0
