@@ -304,6 +304,7 @@ class FairseqTask(object):
             normalize_scores=(not getattr(args, "unnormalized", False)),
             len_penalty=getattr(args, "lenpen", 1),
             unk_penalty=getattr(args, "unkpen", 0),
+            desired_length=getattr(args, "desired_length", -1),
             temperature=getattr(args, "temperature", 1.0),
             match_source_len=getattr(args, "match_source_len", False),
             no_repeat_ngram_size=getattr(args, "no_repeat_ngram_size", 0),

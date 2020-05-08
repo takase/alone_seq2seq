@@ -130,8 +130,6 @@ class SequenceGenerator(nn.Module):
             encoder_input = {
                 k: v for k, v in input.items() if k != "prev_output_tokens"
             }
-            if self.desired_length > -1:
-                encoder_input['tgt_lengths'].fill_(self.desired_length + 1) #+1 for EOS
             if timer is not None:
                 timer.start()
             with torch.no_grad():
@@ -161,6 +159,8 @@ class SequenceGenerator(nn.Module):
                 (default: self.eos)
         """
         self.model.reset_incremental_state()
+        if self.desired_length > -1:
+            sample['net_input']['tgt_lengths'].fill_(self.desired_length + 1) #+1 for EOS
         return self._generate(sample, **kwargs)
 
     def _generate(
