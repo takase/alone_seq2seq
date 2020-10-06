@@ -39,7 +39,7 @@ python -u train.py \
 
 When you want to convert binary mask into real number filter, please set the following arguments:
 ```bash
-    --one-emb real --one-emb-relu-dropout 0.15
+    --one-emb real --one-emb-relu-dropout 0.2
 ```
 
 ### Test (decoding)
